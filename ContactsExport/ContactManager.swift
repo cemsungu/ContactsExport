@@ -1,0 +1,540 @@
+import Foundation
+import Contacts
+import Combine
+import UIKit
+
+struct ContactContainer: Identifiable {
+    let id: String
+    let name: String
+    let type: CNContainerType
+    let contacts: [CNContact]
+
+    var typeLabel: String {
+        switch type {
+        case .unassigned:
+            return "Atanmamış"
+        case .local:
+            return "Yerel (Orphan)"
+        case .exchange:
+            return "Exchange"
+        case .cardDAV:
+            return "CardDAV (iCloud/Google)"
+        @unknown default:
+            return "Bilinmeyen"
+        }
+    }
+}
+
+@MainActor
+final class ContactManager: ObservableObject {
+    @Published var containers: [ContactContainer] = []
+    @Published var authorizationStatus: CNAuthorizationStatus = .notDetermined
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    @Published var totalContactCount = 0
+    @Published var duplicatesRemoved = 0
+
+    private let store = CNContactStore()
+
+    private static let keysToFetch: [CNKeyDescriptor] = [
+        CNContactVCardSerialization.descriptorForRequiredKeys(),
+        CNContactGivenNameKey as CNKeyDescriptor,
+        CNContactFamilyNameKey as CNKeyDescriptor,
+        CNContactOrganizationNameKey as CNKeyDescriptor,
+        CNContactPhoneNumbersKey as CNKeyDescriptor,
+        CNContactEmailAddressesKey as CNKeyDescriptor,
+        CNContactPostalAddressesKey as CNKeyDescriptor,
+        CNContactImageDataKey as CNKeyDescriptor,
+        CNContactThumbnailImageDataKey as CNKeyDescriptor,
+        CNContactImageDataAvailableKey as CNKeyDescriptor,
+        CNContactUrlAddressesKey as CNKeyDescriptor,
+        CNContactBirthdayKey as CNKeyDescriptor,
+        CNContactJobTitleKey as CNKeyDescriptor,
+        CNContactDepartmentNameKey as CNKeyDescriptor,
+        CNContactInstantMessageAddressesKey as CNKeyDescriptor,
+        CNContactSocialProfilesKey as CNKeyDescriptor,
+        CNContactRelationsKey as CNKeyDescriptor,
+        CNContactTypeKey as CNKeyDescriptor,
+        CNContactMiddleNameKey as CNKeyDescriptor,
+        CNContactNamePrefixKey as CNKeyDescriptor,
+        CNContactNameSuffixKey as CNKeyDescriptor,
+        CNContactNicknameKey as CNKeyDescriptor,
+        CNContactDatesKey as CNKeyDescriptor,
+    ]
+
+    func requestAccess() async {
+        let status = CNContactStore.authorizationStatus(for: .contacts)
+
+        // If limited, request full access
+        if status == .limited {
+            do {
+                _ = try await store.requestAccess(for: .contacts)
+                authorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
+                if authorizationStatus == .authorized || authorizationStatus == .limited {
+                    loadAllContacts()
+                }
+            } catch {
+                errorMessage = "İzin hatası: \(error.localizedDescription)"
+            }
+            return
+        }
+
+        do {
+            let granted = try await store.requestAccess(for: .contacts)
+            authorizationStatus = granted ? .authorized : .denied
+            if granted {
+                loadAllContacts()
+            }
+        } catch {
+            errorMessage = "İzin hatası: \(error.localizedDescription)"
+            authorizationStatus = .denied
+        }
+    }
+
+    func checkAuthorizationStatus() {
+        authorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
+        if authorizationStatus == .authorized || authorizationStatus == .limited {
+            loadAllContacts()
+        }
+    }
+
+    func loadAllContacts() {
+        isLoading = true
+        errorMessage = nil
+        containers = []
+        totalContactCount = 0
+        duplicatesRemoved = 0
+
+        do {
+            let allContainers = try store.containers(matching: nil)
+            var result: [ContactContainer] = []
+            var totalBefore = 0
+
+            for container in allContainers {
+                let predicate = CNContact.predicateForContactsInContainer(withIdentifier: container.identifier)
+                let contacts = try store.unifiedContacts(matching: predicate, keysToFetch: Self.keysToFetch)
+                totalBefore += contacts.count
+
+                let deduplicated = deduplicateContacts(contacts)
+
+                let containerInfo = ContactContainer(
+                    id: container.identifier,
+                    name: container.name.isEmpty ? containerTypeDisplayName(container.type) : container.name,
+                    type: container.type,
+                    contacts: deduplicated
+                )
+                result.append(containerInfo)
+                totalContactCount += deduplicated.count
+            }
+
+            duplicatesRemoved = totalBefore - totalContactCount
+            containers = result.sorted { $0.contacts.count > $1.contacts.count }
+        } catch {
+            errorMessage = "Kişiler yüklenirken hata: \(error.localizedDescription)"
+        }
+
+        isLoading = false
+    }
+
+    // MARK: - Deduplication
+
+    private func deduplicateContacts(_ contacts: [CNContact]) -> [CNContact] {
+        var seen: [String: CNContact] = [:]
+
+        // Pass 1: name-based dedup
+        for contact in contacts {
+            let key = deduplicationKey(for: contact)
+            if key.isEmpty { 
+                seen[contact.identifier] = contact
+                continue
+            }
+
+            if let existing = seen[key] {
+                if contactRichness(contact) > contactRichness(existing) {
+                    seen[key] = contact
+                }
+            } else {
+                seen[key] = contact
+            }
+        }
+
+        // Pass 2: phone-based dedup (catches encoding-corrupted name variants like T√ºz√ºn vs Tüzün)
+        var phoneMap: [String: String] = [:] // normalized phone -> key in seen
+        var keysToRemove: Set<String> = []
+
+        for (key, contact) in seen {
+            for phoneValue in contact.phoneNumbers {
+                let normalized = phoneValue.value.stringValue
+                    .components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+                guard normalized.count >= 7 else { continue }
+
+                if let existingKey = phoneMap[normalized], existingKey != key, !keysToRemove.contains(key) {
+                    if let existing = seen[existingKey] {
+                        if contactRichness(contact) > contactRichness(existing) {
+                            keysToRemove.insert(existingKey)
+                            phoneMap[normalized] = key
+                        } else {
+                            keysToRemove.insert(key)
+                        }
+                    }
+                } else if phoneMap[normalized] == nil {
+                    phoneMap[normalized] = key
+                }
+            }
+        }
+
+        // Pass 3: email-based dedup
+        var emailMap: [String: String] = [:]
+        for (key, contact) in seen where !keysToRemove.contains(key) {
+            for emailValue in contact.emailAddresses {
+                let normalized = (emailValue.value as String).lowercased().trimmingCharacters(in: .whitespaces)
+                guard !normalized.isEmpty else { continue }
+
+                if let existingKey = emailMap[normalized], existingKey != key, !keysToRemove.contains(key) {
+                    if let existing = seen[existingKey] {
+                        if contactRichness(contact) > contactRichness(existing) {
+                            keysToRemove.insert(existingKey)
+                            emailMap[normalized] = key
+                        } else {
+                            keysToRemove.insert(key)
+                        }
+                    }
+                } else if emailMap[normalized] == nil {
+                    emailMap[normalized] = key
+                }
+            }
+        }
+
+        for key in keysToRemove {
+            seen.removeValue(forKey: key)
+        }
+
+        return Array(seen.values)
+    }
+
+    private func deduplicationKey(for contact: CNContact) -> String {
+        let normalizedName = "\(contact.givenName) \(contact.familyName)"
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased()
+            .folding(options: .diacriticInsensitive, locale: .current)
+
+        // Normalize phone numbers: strip non-digits
+        let phones = contact.phoneNumbers
+            .map { $0.value.stringValue.components(separatedBy: CharacterSet.decimalDigits.inverted).joined() }
+            .sorted()
+
+        let emails = contact.emailAddresses
+            .map { ($0.value as String).lowercased().trimmingCharacters(in: .whitespaces) }
+            .sorted()
+
+        // Build composite key
+        if !normalizedName.isEmpty {
+            // Name + first phone or email for disambiguation
+            let disambiguator = phones.first ?? emails.first ?? ""
+            return "\(normalizedName)|\(disambiguator)"
+        }
+
+        // No name — match by phone or email alone
+        if let phone = phones.first, !phone.isEmpty {
+            return "phone|\(phone)"
+        }
+        if let email = emails.first, !email.isEmpty {
+            return "email|\(email)"
+        }
+
+        return ""
+    }
+
+    private func contactRichness(_ contact: CNContact) -> Int {
+        var score = 0
+        if !contact.givenName.isEmpty { score += 1 }
+        if !contact.familyName.isEmpty { score += 1 }
+        if !contact.organizationName.isEmpty { score += 1 }
+        if !contact.jobTitle.isEmpty { score += 1 }
+        score += contact.phoneNumbers.count
+        score += contact.emailAddresses.count
+        score += contact.postalAddresses.count
+        score += contact.urlAddresses.count
+        if contact.imageData != nil { score += 2 }
+        if contact.birthday != nil { score += 1 }
+        score += contact.socialProfiles.count
+        score += contact.instantMessageAddresses.count
+        score += contact.contactRelations.count
+
+        // Bonus for clean Unicode name — penalizes mojibake (√ º ¿ ½ etc.)
+        let fullName = "\(contact.givenName)\(contact.familyName)"
+        let nameChars = CharacterSet.letters.union(.whitespaces).union(CharacterSet(charactersIn: "-'."))
+        if !fullName.isEmpty && fullName.unicodeScalars.allSatisfy({ nameChars.contains($0) }) {
+            score += 10
+        }
+
+        return score
+    }
+
+    // MARK: - Export
+
+    private static let maxChunkSize = 5 * 1024 * 1024 // 5 MB — Gmail import safe limit
+    private static let maxContactsPerChunk = 3000     // Google Contacts import limit
+
+    func exportAllContactsToVCard() -> [URL] {
+        let allContacts = containers.flatMap { $0.contacts }
+        guard !allContacts.isEmpty else { return [] }
+        let deduplicated = deduplicateContacts(allContacts)
+        return writeVCardFiles(contacts: deduplicated, baseName: "TumKisiler")
+    }
+
+    func exportContainerToVCard(_ container: ContactContainer) -> [URL] {
+        guard !container.contacts.isEmpty else { return [] }
+        let safeName = container.name
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+        return writeVCardFiles(contacts: container.contacts, baseName: safeName)
+    }
+
+    private func writeVCardFiles(contacts: [CNContact], baseName: String) -> [URL] {
+        do {
+            let baseData = try CNContactVCardSerialization.data(with: contacts)
+            guard let baseString = String(data: baseData, encoding: .utf8) else {
+                errorMessage = "vCard dönüştürme hatası"
+                return []
+            }
+
+            let enriched = enrichVCards(baseString: baseString, contacts: contacts)
+
+            // Split into individual vCard blocks
+            let blocks = enriched.components(separatedBy: "END:VCARD\r\n")
+                .filter { $0.contains("BEGIN:VCARD") }
+                .map { $0 + "END:VCARD\r\n" }
+
+            // Chunk by size AND contact count (Google max 3000 per import)
+            var chunks: [[String]] = [[]]
+            var currentSize = 0
+            var currentCount = 0
+
+            for block in blocks {
+                let blockSize = block.utf8.count
+                let needNewChunk = !chunks[chunks.count - 1].isEmpty &&
+                    (currentSize + blockSize > Self.maxChunkSize || currentCount >= Self.maxContactsPerChunk)
+                if needNewChunk {
+                    chunks.append([])
+                    currentSize = 0
+                    currentCount = 0
+                }
+                chunks[chunks.count - 1].append(block)
+                currentSize += blockSize
+                currentCount += 1
+            }
+
+            let tempDir = FileManager.default.temporaryDirectory
+            var urls: [URL] = []
+
+            for (index, chunk) in chunks.enumerated() {
+                let content = chunk.joined()
+                let suffix = chunks.count > 1 ? "_\(index + 1)" : ""
+                let fileURL = tempDir.appendingPathComponent("\(baseName)\(suffix).vcf")
+
+                if FileManager.default.fileExists(atPath: fileURL.path) {
+                    try FileManager.default.removeItem(at: fileURL)
+                }
+
+                // Write as raw Data to prevent any platform line-ending conversion
+                guard let data = content.data(using: .utf8) else { continue }
+                try data.write(to: fileURL, options: .atomic)
+                urls.append(fileURL)
+            }
+
+            return urls
+        } catch {
+            errorMessage = "Export hatası: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    private func enrichVCards(baseString: String, contacts: [CNContact]) -> String {
+        // Normalize all line endings to \n first, we'll convert to \r\n at the end
+        let normalized = baseString
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        // Split base vCard into individual entries
+        let vcards = normalized.components(separatedBy: "END:VCARD")
+            .filter { $0.contains("BEGIN:VCARD") }
+
+        var result = ""
+        for (index, contact) in contacts.enumerated() {
+            guard index < vcards.count else { break }
+            var card = vcards[index]
+
+            // --- PHOTO disabled for debugging ---
+            // if let imageData = contact.imageData,
+            //    !card.contains("PHOTO") {
+            //     let compressed = compressPhoto(imageData, maxBytes: 300_000)
+            //     let base64 = compressed.base64EncodedString()
+            //     let photoLine = "PHOTO;ENCODING=b;TYPE=JPEG:" + base64
+            //     card += foldVCardLine(photoLine) + "\n"
+            // }
+
+            // --- BIRTHDAY ---
+            if let birthday = contact.birthday,
+               !card.contains("BDAY"),
+               let month = birthday.month,
+               let day = birthday.day {
+                if let year = birthday.year {
+                    card += "BDAY:\(String(format: "%04d-%02d-%02d", year, month, day))\n"
+                } else {
+                    card += "BDAY:--\(String(format: "%02d-%02d", month, day))\n"
+                }
+            }
+
+            // --- OTHER DATES (anniversary etc.) ---
+            for dateValue in contact.dates {
+                let label = (dateValue.label ?? "other")
+                    .replacingOccurrences(of: "_$!<", with: "")
+                    .replacingOccurrences(of: ">!$_", with: "")
+                let dc = dateValue.value as DateComponents
+                let month = dc.month
+                let day = dc.day
+                if let month, let day {
+                    if let year = dc.year {
+                        card += "X-ABDATE;TYPE=\(label):\(String(format: "%04d-%02d-%02d", year, month, day))\n"
+                    } else {
+                        card += "X-ABDATE;TYPE=\(label):----\(String(format: "-%02d-%02d", month, day))\n"
+                    }
+                }
+            }
+
+            // --- SOCIAL PROFILES ---
+            for profile in contact.socialProfiles {
+                let service = profile.value.service
+                let username = profile.value.username
+                let urlString = profile.value.urlString
+                if !username.isEmpty || !urlString.isEmpty {
+                    let value = urlString.isEmpty ? username : urlString
+                    card += "X-SOCIALPROFILE;TYPE=\(service):\(value)\n"
+                }
+            }
+
+            // --- RELATIONS (related names) ---
+            for relation in contact.contactRelations {
+                let label = (relation.label ?? "other")
+                    .replacingOccurrences(of: "_$!<", with: "")
+                    .replacingOccurrences(of: ">!$_", with: "")
+                let name = relation.value.name
+                if !name.isEmpty {
+                    card += "X-ABRELATEDNAMES;TYPE=\(label):\(name)\n"
+                }
+            }
+
+            // --- INSTANT MESSAGING ---
+            for im in contact.instantMessageAddresses where !card.contains(im.value.username) {
+                let service = im.value.service
+                let username = im.value.username
+                if !username.isEmpty {
+                    card += "IMPP;X-SERVICE-TYPE=\(service):x-apple:\(username)\n"
+                }
+            }
+
+            // --- NICKNAME ---
+            if !contact.nickname.isEmpty && !card.contains("NICKNAME") {
+                card += "NICKNAME:\(contact.nickname)\n"
+            }
+
+            result += card + "END:VCARD\n"
+        }
+
+        // Append any remaining vCards that didn't match (shouldn't happen normally)
+        for index in contacts.count..<vcards.count {
+            result += vcards[index] + "END:VCARD\n"
+        }
+
+        // Convert all line endings to proper \r\n for vCard standard
+        return result.replacingOccurrences(of: "\n", with: "\r\n")
+    }
+
+    private func compressPhoto(_ data: Data, maxBytes: Int) -> Data {
+        guard let uiImage = UIImage(data: data) else { return data }
+
+        // If already small enough, just re-encode at high quality
+        if data.count <= maxBytes {
+            return uiImage.jpegData(compressionQuality: 0.9) ?? data
+        }
+
+        // First try: reduce JPEG quality (keep original resolution)
+        var quality: CGFloat = 0.85
+        var compressed = uiImage.jpegData(compressionQuality: quality) ?? data
+        while compressed.count > maxBytes && quality > 0.4 {
+            quality -= 0.05
+            compressed = uiImage.jpegData(compressionQuality: quality) ?? compressed
+        }
+        if compressed.count <= maxBytes { return compressed }
+
+        // Second: scale down to max 400x400 keeping aspect ratio
+        let maxDim: CGFloat = 400
+        let origSize = uiImage.size
+        if origSize.width > maxDim || origSize.height > maxDim {
+            let ratio = min(maxDim / origSize.width, maxDim / origSize.height)
+            let newSize = CGSize(width: origSize.width * ratio, height: origSize.height * ratio)
+            let renderer = UIGraphicsImageRenderer(size: newSize)
+            let resized = renderer.image { _ in
+                uiImage.draw(in: CGRect(origin: .zero, size: newSize))
+            }
+            compressed = resized.jpegData(compressionQuality: 0.7) ?? compressed
+        }
+        return compressed
+    }
+
+    private func foldVCardLine(_ line: String) -> String {
+        // vCard 3.0: max 75 octets per line, continuation lines start with a space
+        let maxLen = 75
+        guard line.count > maxLen else { return line }
+        var result = ""
+        var remaining = line
+        var isFirst = true
+        while !remaining.isEmpty {
+            let len = isFirst ? maxLen : maxLen - 1
+            let prefix = String(remaining.prefix(len))
+            remaining = String(remaining.dropFirst(len))
+            if isFirst {
+                result += prefix
+                isFirst = false
+            } else {
+                result += "\n " + prefix
+            }
+        }
+        return result
+    }
+
+    // MARK: - Helpers
+
+    private func containerTypeDisplayName(_ type: CNContainerType) -> String {
+        switch type {
+        case .unassigned:
+            return "Atanmamış"
+        case .local:
+            return "Yerel Kişiler"
+        case .exchange:
+            return "Exchange"
+        case .cardDAV:
+            return "CardDAV"
+        @unknown default:
+            return "Diğer"
+        }
+    }
+
+    func displayName(for contact: CNContact) -> String {
+        let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
+        if name.isEmpty {
+            if let firstEmail = contact.emailAddresses.first {
+                return firstEmail.value as String
+            }
+            if let firstPhone = contact.phoneNumbers.first {
+                return firstPhone.value.stringValue
+            }
+            if !contact.organizationName.isEmpty {
+                return contact.organizationName
+            }
+            return "(İsimsiz Kişi)"
+        }
+        return name
+    }
+}
