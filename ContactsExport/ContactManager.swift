@@ -537,4 +537,151 @@ final class ContactManager: ObservableObject {
         }
         return name
     }
+
+    // MARK: - Deletable Contacts Detection
+
+    struct DeletableContact: Identifiable {
+        let id: String
+        let contact: CNContact
+        let reason: DeletionReason
+        let keptContact: CNContact? // the "winner" this duplicates
+    }
+
+    enum DeletionReason {
+        case duplicate
+        case mojibake
+
+        var label: String {
+            switch self {
+            case .duplicate: return "Duplike"
+            case .mojibake: return "Karakter Bozuk"
+            }
+        }
+    }
+
+    func findDeletableContacts() -> [DeletableContact] {
+        let allContacts = containers.flatMap { $0.contacts }
+        var deletables: [DeletableContact] = []
+        var seenIdentifiers: Set<String> = []
+
+        // --- Pass 1: Name-based duplicates ---
+        var nameMap: [String: [CNContact]] = [:]
+        for contact in allContacts {
+            let key = deduplicationKey(for: contact)
+            guard !key.isEmpty else { continue }
+            nameMap[key, default: []].append(contact)
+        }
+
+        for (_, group) in nameMap where group.count > 1 {
+            let sorted = group.sorted { contactRichness($0) > contactRichness($1) }
+            let winner = sorted[0]
+            for loser in sorted.dropFirst() {
+                if !seenIdentifiers.contains(loser.identifier) {
+                    seenIdentifiers.insert(loser.identifier)
+                    deletables.append(DeletableContact(
+                        id: loser.identifier,
+                        contact: loser,
+                        reason: .duplicate,
+                        keptContact: winner
+                    ))
+                }
+            }
+        }
+
+        // --- Pass 2: Phone-based duplicates (catches mojibake name variants) ---
+        var phoneGroups: [String: [CNContact]] = [:]
+        for contact in allContacts where !seenIdentifiers.contains(contact.identifier) {
+            for phoneValue in contact.phoneNumbers {
+                let normalized = phoneValue.value.stringValue
+                    .components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+                guard normalized.count >= 7 else { continue }
+                phoneGroups[normalized, default: []].append(contact)
+            }
+        }
+
+        for (_, group) in phoneGroups where group.count > 1 {
+            let unique = Dictionary(grouping: group, by: \.identifier).values.map(\.first!)
+            guard unique.count > 1 else { continue }
+            let sorted = unique.sorted { contactRichness($0) > contactRichness($1) }
+            let winner = sorted[0]
+            for loser in sorted.dropFirst() {
+                if !seenIdentifiers.contains(loser.identifier) {
+                    seenIdentifiers.insert(loser.identifier)
+                    let isMojibake = hasMojibake(loser)
+                    deletables.append(DeletableContact(
+                        id: loser.identifier,
+                        contact: loser,
+                        reason: isMojibake ? .mojibake : .duplicate,
+                        keptContact: winner
+                    ))
+                }
+            }
+        }
+
+        // --- Pass 3: Email-based duplicates ---
+        var emailGroups: [String: [CNContact]] = [:]
+        for contact in allContacts where !seenIdentifiers.contains(contact.identifier) {
+            for emailValue in contact.emailAddresses {
+                let normalized = (emailValue.value as String).lowercased().trimmingCharacters(in: .whitespaces)
+                guard !normalized.isEmpty else { continue }
+                emailGroups[normalized, default: []].append(contact)
+            }
+        }
+
+        for (_, group) in emailGroups where group.count > 1 {
+            let unique = Dictionary(grouping: group, by: \.identifier).values.map(\.first!)
+            guard unique.count > 1 else { continue }
+            let sorted = unique.sorted { contactRichness($0) > contactRichness($1) }
+            let winner = sorted[0]
+            for loser in sorted.dropFirst() {
+                if !seenIdentifiers.contains(loser.identifier) {
+                    seenIdentifiers.insert(loser.identifier)
+                    let isMojibake = hasMojibake(loser)
+                    deletables.append(DeletableContact(
+                        id: loser.identifier,
+                        contact: loser,
+                        reason: isMojibake ? .mojibake : .duplicate,
+                        keptContact: winner
+                    ))
+                }
+            }
+        }
+
+        // --- Pass 4: Standalone mojibake (no duplicate match) ---
+        for contact in allContacts where !seenIdentifiers.contains(contact.identifier) {
+            if hasMojibake(contact) {
+                seenIdentifiers.insert(contact.identifier)
+                deletables.append(DeletableContact(
+                    id: contact.identifier,
+                    contact: contact,
+                    reason: .mojibake,
+                    keptContact: nil
+                ))
+            }
+        }
+
+        return deletables
+    }
+
+    private func hasMojibake(_ contact: CNContact) -> Bool {
+        let fullName = "\(contact.givenName)\(contact.familyName)"
+        guard !fullName.isEmpty else { return false }
+        // UTF-8 Turkish chars decoded as Mac Roman: √ (C3), ƒ (C4), ≈ (C5)
+        // UTF-8 Turkish chars decoded as Windows-1252: Ã (C3), Â
+        // Other common mojibake artifacts: º, ¿, ½
+        let mojibakeChars = CharacterSet(charactersIn: "√≈ƒº¿½ÃÂ")
+        return fullName.unicodeScalars.contains { mojibakeChars.contains($0) }
+    }
+
+    func deleteContacts(_ contacts: [CNContact]) throws {
+        let saveRequest = CNSaveRequest()
+        for contact in contacts {
+            // Need mutable copy to delete
+            guard let mutable = contact.mutableCopy() as? CNMutableContact else { continue }
+            saveRequest.delete(mutable)
+        }
+        try store.execute(saveRequest)
+        // Reload after deletion
+        loadAllContacts()
+    }
 }

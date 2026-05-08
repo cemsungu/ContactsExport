@@ -12,6 +12,7 @@ struct ContentView: View {
     @StateObject private var manager = ContactManager()
     @State private var selectedContainer: ContactContainer?
     @State private var showContainerDetail = false
+    @State private var showDuplicatePreview = false
 
     var body: some View {
         NavigationStack {
@@ -43,6 +44,9 @@ struct ContentView: View {
                 if let container = selectedContainer {
                     ContainerDetailView(container: container, manager: manager)
                 }
+            }
+            .sheet(isPresented: $showDuplicatePreview) {
+                DuplicatePreviewView(manager: manager)
             }
         }
         .onAppear {
@@ -171,6 +175,24 @@ struct ContentView: View {
                             Text("\(manager.duplicatesRemoved)")
                                 .font(.headline)
                                 .foregroundStyle(.orange)
+                        }
+                    }
+
+                    Button {
+                        showDuplicatePreview = true
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading) {
+                                Text("Duplike & Bozuk Kişileri Temizle")
+                                    .font(.subheadline)
+                                Text("Tekrarlanan ve karakter bozukluğu olan kişileri sil")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "trash.circle")
+                                .font(.title2)
+                                .foregroundStyle(.red)
                         }
                     }
                 } header: {
@@ -359,6 +381,179 @@ struct ContactRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Duplicate Preview View
+
+struct DuplicatePreviewView: View {
+    let manager: ContactManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var deletables: [ContactManager.DeletableContact] = []
+    @State private var selected: Set<String> = []
+    @State private var isLoading = true
+    @State private var isDeleting = false
+    @State private var showConfirmation = false
+    @State private var deleteError: String?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading {
+                    ProgressView("Analiz ediliyor...")
+                } else if deletables.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 64))
+                            .foregroundStyle(.green)
+                        Text("Temiz!")
+                            .font(.title2.bold())
+                        Text("Duplike veya karakter bozukluğu olan kişi bulunamadı.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding()
+                } else {
+                    List {
+                        Section {
+                            HStack {
+                                Text("Silinecek: \(selected.count) / \(deletables.count)")
+                                    .font(.headline)
+                                Spacer()
+                                Button(selected.count == deletables.count ? "Hiçbirini Seçme" : "Tümünü Seç") {
+                                    if selected.count == deletables.count {
+                                        selected.removeAll()
+                                    } else {
+                                        selected = Set(deletables.map(\.id))
+                                    }
+                                }
+                                .font(.subheadline)
+                            }
+                        }
+
+                        if let error = deleteError {
+                            Section {
+                                Label(error, systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.red)
+                            }
+                        }
+
+                        Section {
+                            ForEach(deletables) { item in
+                                DeletableContactRow(
+                                    item: item,
+                                    manager: manager,
+                                    isSelected: selected.contains(item.id),
+                                    toggle: {
+                                        if selected.contains(item.id) {
+                                            selected.remove(item.id)
+                                        } else {
+                                            selected.insert(item.id)
+                                        }
+                                    }
+                                )
+                            }
+                        } header: {
+                            Text("Silinecek Kişiler")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Duplike Temizleme")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("İptal") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Sil (\(selected.count))") {
+                        showConfirmation = true
+                    }
+                    .foregroundStyle(.red)
+                    .bold()
+                    .disabled(selected.isEmpty || isDeleting)
+                }
+            }
+            .alert("Kişileri Sil", isPresented: $showConfirmation) {
+                Button("İptal", role: .cancel) { }
+                Button("Sil", role: .destructive) {
+                    performDeletion()
+                }
+            } message: {
+                Text("\(selected.count) kişi kalıcı olarak silinecek. Bu işlem geri alınamaz.")
+            }
+            .onAppear {
+                Task {
+                    deletables = manager.findDeletableContacts()
+                    selected = Set(deletables.map(\.id))
+                    isLoading = false
+                }
+            }
+        }
+    }
+
+    private func performDeletion() {
+        isDeleting = true
+        let toDelete = deletables.filter { selected.contains($0.id) }.map(\.contact)
+        do {
+            try manager.deleteContacts(toDelete)
+            dismiss()
+        } catch {
+            deleteError = "Silme hatası: \(error.localizedDescription)"
+            isDeleting = false
+        }
+    }
+}
+
+struct DeletableContactRow: View {
+    let item: ContactManager.DeletableContact
+    let manager: ContactManager
+    let isSelected: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? .red : .gray)
+                    .font(.title3)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text(manager.displayName(for: item.contact))
+                            .font(.body)
+                            .strikethrough(isSelected, color: .red)
+                        Spacer()
+                        Text(item.reason.label)
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(item.reason == .mojibake ? Color.purple.opacity(0.15) : Color.orange.opacity(0.15))
+                            .foregroundStyle(item.reason == .mojibake ? .purple : .orange)
+                            .clipShape(Capsule())
+                    }
+
+                    if let phone = item.contact.phoneNumbers.first {
+                        Text(phone.value.stringValue)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let kept = item.keptContact {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.right.circle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.green)
+                            Text("Korunan: \(manager.displayName(for: kept))")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 
