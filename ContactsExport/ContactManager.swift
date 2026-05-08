@@ -33,6 +33,8 @@ final class ContactManager: ObservableObject {
     @Published var errorMessage: String?
     @Published var totalContactCount = 0
     @Published var duplicatesRemoved = 0
+    @Published var hasDeletableContacts = false
+    @Published var removedDuplicates: [DeletableContact] = []
 
     private let store = CNContactStore()
 
@@ -104,18 +106,20 @@ final class ContactManager: ObservableObject {
         containers = []
         totalContactCount = 0
         duplicatesRemoved = 0
+        hasDeletableContacts = false
+        removedDuplicates = []
 
         do {
             let allContainers = try store.containers(matching: nil)
             var result: [ContactContainer] = []
-            var totalBefore = 0
+            var allRemoved: [DeletableContact] = []
 
             for container in allContainers {
                 let predicate = CNContact.predicateForContactsInContainer(withIdentifier: container.identifier)
                 let contacts = try store.unifiedContacts(matching: predicate, keysToFetch: Self.keysToFetch)
-                totalBefore += contacts.count
 
-                let deduplicated = deduplicateContacts(contacts)
+                let (deduplicated, removed) = deduplicateContacts(contacts)
+                allRemoved.append(contentsOf: removed)
 
                 let containerInfo = ContactContainer(
                     id: container.identifier,
@@ -127,8 +131,12 @@ final class ContactManager: ObservableObject {
                 totalContactCount += deduplicated.count
             }
 
-            duplicatesRemoved = totalBefore - totalContactCount
+            removedDuplicates = allRemoved
+            duplicatesRemoved = allRemoved.count
             containers = result.sorted { $0.contacts.count > $1.contacts.count }
+
+            // Pre-compute so the UI doesn't run heavy analysis on every render
+            hasDeletableContacts = !findDeletableContacts().isEmpty
         } catch {
             errorMessage = "Kişiler yüklenirken hata: \(error.localizedDescription)"
         }
@@ -138,8 +146,9 @@ final class ContactManager: ObservableObject {
 
     // MARK: - Deduplication
 
-    private func deduplicateContacts(_ contacts: [CNContact]) -> [CNContact] {
+    private func deduplicateContacts(_ contacts: [CNContact]) -> (kept: [CNContact], removed: [DeletableContact]) {
         var seen: [String: CNContact] = [:]
+        var losers: [(loser: CNContact, winnerKey: String)] = []
 
         // Pass 1: name-based dedup
         for contact in contacts {
@@ -151,7 +160,10 @@ final class ContactManager: ObservableObject {
 
             if let existing = seen[key] {
                 if contactRichness(contact) > contactRichness(existing) {
+                    losers.append((loser: existing, winnerKey: key))
                     seen[key] = contact
+                } else {
+                    losers.append((loser: contact, winnerKey: key))
                 }
             } else {
                 seen[key] = contact
@@ -160,7 +172,7 @@ final class ContactManager: ObservableObject {
 
         // Pass 2: phone-based dedup (catches encoding-corrupted name variants like T√ºz√ºn vs Tüzün)
         var phoneMap: [String: String] = [:] // normalized phone -> key in seen
-        var keysToRemove: Set<String> = []
+        var keysToRemove: [String: String] = [:] // removed key -> winner key
 
         for (key, contact) in seen {
             for phoneValue in contact.phoneNumbers {
@@ -168,13 +180,13 @@ final class ContactManager: ObservableObject {
                     .components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
                 guard normalized.count >= 7 else { continue }
 
-                if let existingKey = phoneMap[normalized], existingKey != key, !keysToRemove.contains(key) {
+                if let existingKey = phoneMap[normalized], existingKey != key, keysToRemove[key] == nil {
                     if let existing = seen[existingKey] {
                         if contactRichness(contact) > contactRichness(existing) {
-                            keysToRemove.insert(existingKey)
+                            keysToRemove[existingKey] = key
                             phoneMap[normalized] = key
                         } else {
-                            keysToRemove.insert(key)
+                            keysToRemove[key] = existingKey
                         }
                     }
                 } else if phoneMap[normalized] == nil {
@@ -185,18 +197,18 @@ final class ContactManager: ObservableObject {
 
         // Pass 3: email-based dedup
         var emailMap: [String: String] = [:]
-        for (key, contact) in seen where !keysToRemove.contains(key) {
+        for (key, contact) in seen where keysToRemove[key] == nil {
             for emailValue in contact.emailAddresses {
                 let normalized = (emailValue.value as String).lowercased().trimmingCharacters(in: .whitespaces)
                 guard !normalized.isEmpty else { continue }
 
-                if let existingKey = emailMap[normalized], existingKey != key, !keysToRemove.contains(key) {
+                if let existingKey = emailMap[normalized], existingKey != key, keysToRemove[key] == nil {
                     if let existing = seen[existingKey] {
                         if contactRichness(contact) > contactRichness(existing) {
-                            keysToRemove.insert(existingKey)
+                            keysToRemove[existingKey] = key
                             emailMap[normalized] = key
                         } else {
-                            keysToRemove.insert(key)
+                            keysToRemove[key] = existingKey
                         }
                     }
                 } else if emailMap[normalized] == nil {
@@ -205,11 +217,27 @@ final class ContactManager: ObservableObject {
             }
         }
 
-        for key in keysToRemove {
-            seen.removeValue(forKey: key)
+        // Build removed list from pass 2 & 3
+        for (removedKey, winnerKey) in keysToRemove {
+            if let loserContact = seen[removedKey] {
+                losers.append((loser: loserContact, winnerKey: winnerKey))
+            }
+            seen.removeValue(forKey: removedKey)
         }
 
-        return Array(seen.values)
+        // Build DeletableContact array with winner references
+        let removed = losers.map { pair -> DeletableContact in
+            let winner = seen[pair.winnerKey]
+            let isMojibake = hasMojibake(pair.loser)
+            return DeletableContact(
+                id: pair.loser.identifier,
+                contact: pair.loser,
+                reason: isMojibake ? .mojibake : .duplicate,
+                keptContact: winner
+            )
+        }
+
+        return (kept: Array(seen.values), removed: removed)
     }
 
     private func deduplicationKey(for contact: CNContact) -> String {
@@ -276,11 +304,27 @@ final class ContactManager: ObservableObject {
     private static let maxChunkSize = 5 * 1024 * 1024 // 5 MB — Gmail import safe limit
     private static let maxContactsPerChunk = 3000     // Google Contacts import limit
 
+    private static var exportDirectory: URL {
+        let docs = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let exportDir = docs.appendingPathComponent("ExportedVCards", isDirectory: true)
+        try? FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
+        return exportDir
+    }
+
+    private static func cleanExportDirectory() {
+        let dir = exportDirectory
+        if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+            for file in files {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+
     func exportAllContactsToVCard() -> [URL] {
         let allContacts = containers.flatMap { $0.contacts }
         guard !allContacts.isEmpty else { return [] }
         let deduplicated = deduplicateContacts(allContacts)
-        return writeVCardFiles(contacts: deduplicated, baseName: "TumKisiler")
+        return writeVCardFiles(contacts: deduplicated.kept, baseName: "TumKisiler")
     }
 
     func exportContainerToVCard(_ container: ContactContainer) -> [URL] {
@@ -293,6 +337,8 @@ final class ContactManager: ObservableObject {
 
     private func writeVCardFiles(contacts: [CNContact], baseName: String) -> [URL] {
         do {
+            Self.cleanExportDirectory()
+
             let baseData = try CNContactVCardSerialization.data(with: contacts)
             guard let baseString = String(data: baseData, encoding: .utf8) else {
                 errorMessage = "vCard dönüştürme hatası"
@@ -325,13 +371,13 @@ final class ContactManager: ObservableObject {
                 currentCount += 1
             }
 
-            let tempDir = FileManager.default.temporaryDirectory
+            let exportDir = Self.exportDirectory
             var urls: [URL] = []
 
             for (index, chunk) in chunks.enumerated() {
                 let content = chunk.joined()
                 let suffix = chunks.count > 1 ? "_\(index + 1)" : ""
-                let fileURL = tempDir.appendingPathComponent("\(baseName)\(suffix).vcf")
+                let fileURL = exportDir.appendingPathComponent("\(baseName)\(suffix).vcf")
 
                 if FileManager.default.fileExists(atPath: fileURL.path) {
                     try FileManager.default.removeItem(at: fileURL)

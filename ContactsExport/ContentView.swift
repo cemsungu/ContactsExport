@@ -8,11 +8,25 @@
 import SwiftUI
 import Contacts
 
+// MARK: - Copyright Footer
+
+struct CopyrightFooter: View {
+    var body: some View {
+        Text("© 2026 Cem Süngü")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+    }
+}
+
 struct ContentView: View {
     @StateObject private var manager = ContactManager()
-    @State private var selectedContainer: ContactContainer?
-    @State private var showContainerDetail = false
     @State private var showDuplicatePreview = false
+    @State private var showAllContacts = false
+    @State private var showAccountList = false
+    @State private var showDuplicateList = false
+    @State private var isExporting = false
 
     var body: some View {
         NavigationStack {
@@ -28,7 +42,7 @@ struct ContentView: View {
                     deniedView
                 }
             }
-            .navigationTitle("Kişi Export")
+            .navigationTitle("Kişilerimi Yedekle")
             .toolbar {
                 if manager.authorizationStatus == .authorized || manager.authorizationStatus == .limited {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -40,13 +54,17 @@ struct ContentView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showContainerDetail) {
-                if let container = selectedContainer {
-                    ContainerDetailView(container: container, manager: manager)
-                }
-            }
             .sheet(isPresented: $showDuplicatePreview) {
                 DuplicatePreviewView(manager: manager)
+            }
+            .sheet(isPresented: $showAllContacts) {
+                AllContactsView(manager: manager)
+            }
+            .sheet(isPresented: $showAccountList) {
+                AccountListView(manager: manager)
+            }
+            .sheet(isPresented: $showDuplicateList) {
+                DuplicateListView(manager: manager)
             }
         }
         .onAppear {
@@ -58,11 +76,13 @@ struct ContentView: View {
 
     private var requestAccessView: some View {
         VStack(spacing: 24) {
+            Spacer()
+
             Image(systemName: "person.crop.rectangle.stack")
                 .font(.system(size: 64))
                 .foregroundStyle(.blue)
 
-            Text("Kişilerinizi Dışa Aktarın")
+            Text("Kişilerimi Yedekle")
                 .font(.title2.bold())
 
             Text("Tüm hesaplarınızdaki kişileri Gmail ve Outlook/Hotmail uyumlu vCard (.vcf) formatında dışa aktarın.")
@@ -85,6 +105,10 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             .padding(.horizontal, 40)
+
+            Spacer()
+
+            CopyrightFooter()
         }
         .padding()
     }
@@ -93,6 +117,8 @@ struct ContentView: View {
 
     private var deniedView: some View {
         VStack(spacing: 16) {
+            Spacer()
+
             Image(systemName: "lock.shield")
                 .font(.system(size: 64))
                 .foregroundStyle(.red)
@@ -112,6 +138,10 @@ struct ContentView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
+
+            Spacer()
+
+            CopyrightFooter()
         }
         .padding()
     }
@@ -154,45 +184,73 @@ struct ContentView: View {
             if !manager.containers.isEmpty {
                 // Summary Section
                 Section {
-                    HStack {
-                        Label("Toplam Kişi", systemImage: "person.2")
-                        Spacer()
-                        Text("\(manager.totalContactCount)")
-                            .font(.headline)
-                            .foregroundStyle(.blue)
-                    }
-                    HStack {
-                        Label("Hesap Sayısı", systemImage: "tray.2")
-                        Spacer()
-                        Text("\(manager.containers.count)")
-                            .font(.headline)
-                            .foregroundStyle(.blue)
-                    }
-                    if manager.duplicatesRemoved > 0 {
+                    Button {
+                        showAllContacts = true
+                    } label: {
                         HStack {
-                            Label("Kaldırılan Duplike", systemImage: "doc.on.doc")
+                            Label("Toplam Kişi", systemImage: "person.2")
+                                .foregroundStyle(.primary)
                             Spacer()
-                            Text("\(manager.duplicatesRemoved)")
+                            Text("\(manager.totalContactCount)")
                                 .font(.headline)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.blue)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
                     }
 
                     Button {
-                        showDuplicatePreview = true
+                        showAccountList = true
                     } label: {
-                        Label {
-                            VStack(alignment: .leading) {
-                                Text("Duplike & Bozuk Kişileri Temizle")
-                                    .font(.subheadline)
-                                Text("Tekrarlanan ve karakter bozukluğu olan kişileri sil")
+                        HStack {
+                            Label("Hesap Sayısı", systemImage: "tray.2")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text("\(manager.containers.count)")
+                                .font(.headline)
+                                .foregroundStyle(.blue)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    if manager.duplicatesRemoved > 0 {
+                        Button {
+                            showDuplicateList = true
+                        } label: {
+                            HStack {
+                                Label("Kaldırılan Duplike", systemImage: "doc.on.doc")
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Text("\(manager.duplicatesRemoved)")
+                                    .font(.headline)
+                                    .foregroundStyle(.orange)
+                                Image(systemName: "chevron.right")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.tertiary)
                             }
-                        } icon: {
-                            Image(systemName: "trash.circle")
-                                .font(.title2)
-                                .foregroundStyle(.red)
+                        }
+                    }
+
+                    if manager.hasDeletableContacts {
+                        Button {
+                            showDuplicatePreview = true
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading) {
+                                    Text("Duplike & Bozuk Kişileri Temizle")
+                                        .font(.subheadline)
+                                    Text("Tekrarlanan ve karakter bozukluğu olan kişileri sil")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: "trash.circle")
+                                    .font(.title2)
+                                    .foregroundStyle(.red)
+                            }
                         }
                     }
                 } header: {
@@ -204,58 +262,35 @@ struct ContentView: View {
                     Button {
                         exportAll()
                     } label: {
-                        Label {
-                            VStack(alignment: .leading) {
-                                Text("Tümünü Dışa Aktar")
-                                    .font(.headline)
-                                Text("Tüm hesaplardan \(manager.totalContactCount) kişi • vCard (.vcf)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                        HStack {
+                            Label {
+                                VStack(alignment: .leading) {
+                                    Text("Tümünü Dışa Aktar")
+                                        .font(.headline)
+                                    Text("Tüm hesaplardan \(manager.totalContactCount) kişi • vCard (.vcf)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                if isExporting {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.title2)
+                                        .foregroundStyle(.blue)
+                                }
                             }
-                        } icon: {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.title2)
-                                .foregroundStyle(.blue)
                         }
                     }
+                    .disabled(isExporting)
                 } footer: {
                     Text("Gmail ve Outlook/Hotmail ile uyumlu vCard 3.0 formatında dışa aktarır.")
                 }
 
-                // Per-Container Sections
+                // Copyright
                 Section {
-                    ForEach(manager.containers) { container in
-                        Button {
-                            selectedContainer = container
-                            showContainerDetail = true
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(container.name)
-                                        .font(.headline)
-                                        .foregroundStyle(.primary)
-                                    Text("\(container.typeLabel) • \(container.contacts.count) kişi")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Button {
-                                    exportContainer(container)
-                                } label: {
-                                    Image(systemName: "square.and.arrow.up.circle.fill")
-                                        .font(.title2)
-                                        .foregroundStyle(.blue)
-                                }
-                                .buttonStyle(.plain)
-
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Hesaplar")
+                    CopyrightFooter()
+                        .listRowBackground(Color.clear)
                 }
             }
         }
@@ -264,39 +299,38 @@ struct ContentView: View {
     // MARK: - Actions
 
     private func exportAll() {
-        let urls = manager.exportAllContactsToVCard()
-        if !urls.isEmpty {
-            if urls.count > 1 {
-                manager.errorMessage = "\(urls.count) parça oluşturuldu. Her biri sırayla paylaşılacak."
+        isExporting = true
+        Task.detached {
+            let urls = await manager.exportAllContactsToVCard()
+            await MainActor.run {
+                isExporting = false
+                if !urls.isEmpty {
+                    if urls.count > 1 {
+                        manager.errorMessage = "\(urls.count) parça oluşturuldu. Her biri sırayla paylaşılacak."
+                    }
+                    ShareUtility.share(urls: urls)
+                }
             }
-            ShareUtility.share(urls: urls)
-        }
-    }
-
-    private func exportContainer(_ container: ContactContainer) {
-        let urls = manager.exportContainerToVCard(container)
-        if !urls.isEmpty {
-            if urls.count > 1 {
-                manager.errorMessage = "\(urls.count) parça oluşturuldu. Her biri sırayla paylaşılacak."
-            }
-            ShareUtility.share(urls: urls)
         }
     }
 }
 
-// MARK: - Container Detail View
+// MARK: - All Contacts View
 
-struct ContainerDetailView: View {
-    let container: ContactContainer
+struct AllContactsView: View {
     let manager: ContactManager
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
 
-    var filteredContacts: [CNContact] {
+    private var allContacts: [CNContact] {
+        manager.containers.flatMap { $0.contacts }
+    }
+
+    private var filteredContacts: [CNContact] {
         if searchText.isEmpty {
-            return container.contacts
+            return allContacts
         }
-        return container.contacts.filter { contact in
+        return allContacts.filter { contact in
             let name = manager.displayName(for: contact).lowercased()
             return name.contains(searchText.lowercased())
         }
@@ -306,41 +340,144 @@ struct ContainerDetailView: View {
         NavigationStack {
             List {
                 Section {
-                    HStack {
-                        Label("Tür", systemImage: "info.circle")
-                        Spacer()
-                        Text(container.typeLabel)
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Label("Kişi Sayısı", systemImage: "person.2")
-                        Spacer()
-                        Text("\(container.contacts.count)")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section {
-                    Button {
-                        let urls = manager.exportContainerToVCard(container)
-                        if !urls.isEmpty {
-                            ShareUtility.share(urls: urls)
-                        }
-                    } label: {
-                        Label("Bu Hesabı Dışa Aktar", systemImage: "square.and.arrow.up")
-                    }
-                }
-
-                Section {
                     ForEach(filteredContacts, id: \.identifier) { contact in
                         ContactRow(contact: contact, manager: manager)
                     }
                 } header: {
                     Text("Kişiler (\(filteredContacts.count))")
                 }
+
+                Section {
+                    CopyrightFooter()
+                        .listRowBackground(Color.clear)
+                }
             }
             .searchable(text: $searchText, prompt: "Kişi ara...")
-            .navigationTitle(container.name)
+            .navigationTitle("Tüm Kişiler")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Kapat") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Account List View
+
+struct AccountListView: View {
+    let manager: ContactManager
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(manager.containers) { container in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(container.name)
+                                .font(.headline)
+                            Text(container.typeLabel)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text("\(container.contacts.count) kişi")
+                            .font(.subheadline)
+                            .foregroundStyle(.blue)
+                    }
+                }
+
+                Section {
+                    CopyrightFooter()
+                        .listRowBackground(Color.clear)
+                }
+            }
+            .navigationTitle("Hesaplar")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Kapat") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Duplicate List View (read-only review of removed duplicates)
+
+struct DuplicateListView: View {
+    let manager: ContactManager
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if manager.removedDuplicates.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 64))
+                            .foregroundStyle(.green)
+                        Text("Duplike bulunamadı")
+                            .font(.title3.bold())
+                    }
+                    .padding()
+                } else {
+                    List {
+                        Section {
+                            Text("Otomatik olarak kaldırılan \(manager.removedDuplicates.count) duplike kişi")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Section {
+                            ForEach(manager.removedDuplicates) { item in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(manager.displayName(for: item.contact))
+                                            .font(.body)
+                                        Spacer()
+                                        Text(item.reason.label)
+                                            .font(.caption2)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(item.reason == .mojibake ? Color.purple.opacity(0.15) : Color.orange.opacity(0.15))
+                                            .foregroundStyle(item.reason == .mojibake ? .purple : .orange)
+                                            .clipShape(Capsule())
+                                    }
+
+                                    if let phone = item.contact.phoneNumbers.first {
+                                        Text(phone.value.stringValue)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    if let kept = item.keptContact {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "arrow.right.circle.fill")
+                                                .font(.caption2)
+                                                .foregroundStyle(.green)
+                                            Text("Korunan: \(manager.displayName(for: kept))")
+                                                .font(.caption)
+                                                .foregroundStyle(.green)
+                                        }
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        } header: {
+                            Text("Kaldırılan Duplikeler")
+                        }
+
+                        Section {
+                            CopyrightFooter()
+                                .listRowBackground(Color.clear)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Duplike Detay")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

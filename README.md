@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # ContactsExport
+=======
+# Kişilerimi Yedekle
+>>>>>>> f5d9db3 (docs: Türkçe README eklendi)
 
 iPhone'daki tüm hesaplardaki (iCloud, Gmail, Exchange, Yerel) kişileri **Gmail** ve **Outlook/Hotmail** uyumlu vCard (.vcf) formatında dışa aktaran iOS uygulaması.
 
@@ -12,6 +16,10 @@ iPhone'daki tüm hesaplardaki (iCloud, Gmail, Exchange, Yerel) kişileri **Gmail
 - **Gmail/Outlook uyumlu** — vCard 3.0, `\r\n` satır sonları, doğru encoding
 - **Fotoğraf desteği** — Kişi fotoğrafları JPEG olarak sıkıştırılıp (maks. 300 KB) vCard'a eklenir
 - **Zengin vCard alanları** — Doğum günü, sosyal profiller, takma ad, ilişkiler, anlık mesajlaşma
+<<<<<<< HEAD
+=======
+- **Hızlı ve Güvenli** — Performans iyileştirmeleri ve güvenli dosya paylaşımı
+>>>>>>> f5d9db3 (docs: Türkçe README eklendi)
 
 ## Ekran Görüntüsü
 
@@ -30,6 +38,7 @@ iPhone'daki tüm hesaplardaki (iCloud, Gmail, Exchange, Yerel) kişileri **Gmail
 ```bash
 git clone https://github.com/cemsungu/ContactsExport.git
 cd ContactsExport
+<<<<<<< HEAD
 open ContactsExport.xcodeproj
 ```
 
@@ -63,3 +72,6 @@ Xcode'da hedef cihazı seçip **Run** (⌘R) ile çalıştırın.
 ## Lisans
 
 MIT
+=======
+open ContactsExport.xcodeproj
+>>>>>>> f5d9db3 (docs: Türkçe README eklendi)
