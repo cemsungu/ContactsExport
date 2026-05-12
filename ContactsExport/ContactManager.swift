@@ -63,11 +63,10 @@ final class ContactManager: ObservableObject {
         CNContactNicknameKey as CNKeyDescriptor,
         CNContactDatesKey as CNKeyDescriptor,
     ]
-
+    
     func requestAccess() async {
         let status = CNContactStore.authorizationStatus(for: .contacts)
-
-        // Kullanıcıya neden erişim gerektiğini açıklayın
+        
         if status == .notDetermined {
             DispatchQueue.main.async {
                 let alert = UIAlertController(
@@ -81,13 +80,17 @@ final class ContactManager: ObservableObject {
                     }
                 }))
                 alert.addAction(UIAlertAction(title: "İptal", style: .cancel, handler: nil))
-                UIApplication.shared.windows.first?.rootViewController?.present(alert, animated: true, completion: nil)
+                
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = windowScene.windows.first {
+                    window.rootViewController?.present(alert, animated: true)
+                }
             }
         } else {
             await performPermissionRequest()
         }
     }
-
+    
     private func performPermissionRequest() async {
         do {
             let granted = try await store.requestAccess(for: .contacts)
