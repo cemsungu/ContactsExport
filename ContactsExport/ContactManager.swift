@@ -67,20 +67,28 @@ final class ContactManager: ObservableObject {
     func requestAccess() async {
         let status = CNContactStore.authorizationStatus(for: .contacts)
 
-        // If limited, request full access
-        if status == .limited {
-            do {
-                _ = try await store.requestAccess(for: .contacts)
-                authorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
-                if authorizationStatus == .authorized || authorizationStatus == .limited {
-                    loadAllContacts()
-                }
-            } catch {
-                errorMessage = "İzin hatası: \(error.localizedDescription)"
+        // Kullanıcıya neden erişim gerektiğini açıklayın
+        if status == .notDetermined {
+            DispatchQueue.main.async {
+                let alert = UIAlertController(
+                    title: "Kişilere Erişim",
+                    message: "Kişilerinizi Gmail ve Outlook uyumlu vCard (.vcf) formatında dışa aktarabilmek ve duplike kişileri temizleyebilmek için kişi erişim izni gerekmektedir.",
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "Devam Et", style: .default, handler: { _ in
+                    Task {
+                        await self.performPermissionRequest()
+                    }
+                }))
+                alert.addAction(UIAlertAction(title: "İptal", style: .cancel, handler: nil))
+                UIApplication.shared.windows.first?.rootViewController?.present(alert, animated: true, completion: nil)
             }
-            return
+        } else {
+            await performPermissionRequest()
         }
+    }
 
+    private func performPermissionRequest() async {
         do {
             let granted = try await store.requestAccess(for: .contacts)
             authorizationStatus = granted ? .authorized : .denied
