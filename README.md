@@ -46,7 +46,7 @@ Xcode'da hedef cihazı seçip **Run** (⌘R) ile çalıştırın.
 
 ## Kullanım
 
-1. Uygulamayı açın ve **Kişilere Erişim İzni Ver** butonuna basın
+1. Uygulamayı açın ve **Devam Et** butonuna basın
 2. **Tümünü Dışa Aktar** ile tüm kişileri vCard olarak paylaşın
 3. Veya hesap bazında ayrı ayrı export edin
 4. **Duplike & Bozuk Kişileri Temizle** ile gereksiz kişileri silin

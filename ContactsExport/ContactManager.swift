@@ -12,15 +12,15 @@ struct ContactContainer: Identifiable {
     var typeLabel: String {
         switch type {
         case .unassigned:
-            return "Atanmamış"
+            return NSLocalizedString("Atanmamış", comment: "Unassigned container label")
         case .local:
-            return "Yerel (Orphan)"
+            return NSLocalizedString("Yerel Kişiler", comment: "Local container label")
         case .exchange:
-            return "Exchange"
+            return NSLocalizedString("Exchange", comment: "Exchange container label")
         case .cardDAV:
-            return "CardDAV (iCloud/Google)"
+            return NSLocalizedString("CardDAV (iCloud/Google)", comment: "CardDAV container label")
         @unknown default:
-            return "Bilinmeyen"
+            return NSLocalizedString("Bilinmeyen", comment: "Unknown container label")
         }
     }
 }
@@ -69,18 +69,19 @@ final class ContactManager: ObservableObject {
         
         if status == .notDetermined {
             DispatchQueue.main.async {
-                let alert = UIAlertController(
-                    title: "Kişilere Erişim",
-                    message: "Kişilerinizi Gmail ve Outlook uyumlu vCard (.vcf) formatında dışa aktarabilmek ve duplike kişileri temizleyebilmek için kişi erişim izni gerekmektedir.",
-                    preferredStyle: .alert
-                )
-                alert.addAction(UIAlertAction(title: "Devam Et", style: .default, handler: { _ in
+                let title = NSLocalizedString("Kişilere Erişim", comment: "Contacts permission alert title")
+                let message = NSLocalizedString("Kişilerinizi vCard (.vcf) formatında dışa aktarmak ve duplike kişileri tespit edip temizlemek için kişi erişimine ihtiyaç duyar.", comment: "Contacts permission alert message")
+                let continueTitle = NSLocalizedString("Devam Et", comment: "Continue pre-permission button")
+                let cancelTitle = NSLocalizedString("İptal", comment: "Cancel button")
+
+                let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: continueTitle, style: .default, handler: { _ in
                     Task {
                         await self.performPermissionRequest()
                     }
                 }))
-                alert.addAction(UIAlertAction(title: "İptal", style: .cancel, handler: nil))
-                
+                alert.addAction(UIAlertAction(title: cancelTitle, style: .cancel, handler: nil))
+
                 if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                    let window = windowScene.windows.first {
                     window.rootViewController?.present(alert, animated: true)
@@ -99,7 +100,7 @@ final class ContactManager: ObservableObject {
                 loadAllContacts()
             }
         } catch {
-            errorMessage = "İzin hatası: \(error.localizedDescription)"
+            errorMessage = String(format: NSLocalizedString("İzin hatası: %@", comment: "Permission error with reason"), error.localizedDescription)
             authorizationStatus = .denied
         }
     }
@@ -149,7 +150,7 @@ final class ContactManager: ObservableObject {
             // Pre-compute so the UI doesn't run heavy analysis on every render
             hasDeletableContacts = !findDeletableContacts().isEmpty
         } catch {
-            errorMessage = "Kişiler yüklenirken hata: \(error.localizedDescription)"
+            errorMessage = String(format: NSLocalizedString("Kişiler yüklenirken hata: %@", comment: "Error loading contacts"), error.localizedDescription)
         }
 
         isLoading = false
@@ -335,7 +336,11 @@ final class ContactManager: ObservableObject {
         let allContacts = containers.flatMap { $0.contacts }
         guard !allContacts.isEmpty else { return [] }
         let deduplicated = deduplicateContacts(allContacts)
-        return writeVCardFiles(contacts: deduplicated.kept, baseName: "TumKisiler")
+        let baseNameLocalized = NSLocalizedString("Tüm Kişiler", comment: "Base filename for all contacts export")
+        let safeBaseName = baseNameLocalized
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+        return writeVCardFiles(contacts: deduplicated.kept, baseName: safeBaseName)
     }
 
     func exportContainerToVCard(_ container: ContactContainer) -> [URL] {
@@ -352,7 +357,7 @@ final class ContactManager: ObservableObject {
 
             let baseData = try CNContactVCardSerialization.data(with: contacts)
             guard let baseString = String(data: baseData, encoding: .utf8) else {
-                errorMessage = "vCard dönüştürme hatası"
+                errorMessage = NSLocalizedString("vCard dönüştürme hatası", comment: "vCard conversion error")
                 return []
             }
 
@@ -402,7 +407,7 @@ final class ContactManager: ObservableObject {
 
             return urls
         } catch {
-            errorMessage = "Export hatası: \(error.localizedDescription)"
+            errorMessage = String(format: NSLocalizedString("Export hatası: %@", comment: "Export error with reason"), error.localizedDescription)
             return []
         }
     }
@@ -566,15 +571,15 @@ final class ContactManager: ObservableObject {
     private func containerTypeDisplayName(_ type: CNContainerType) -> String {
         switch type {
         case .unassigned:
-            return "Atanmamış"
+            return NSLocalizedString("Atanmamış", comment: "Unassigned container label")
         case .local:
-            return "Yerel Kişiler"
+            return NSLocalizedString("Yerel Kişiler", comment: "Local contacts container label")
         case .exchange:
-            return "Exchange"
+            return NSLocalizedString("Exchange", comment: "Exchange container label")
         case .cardDAV:
-            return "CardDAV"
+            return NSLocalizedString("CardDAV", comment: "CardDAV container label")
         @unknown default:
-            return "Diğer"
+            return NSLocalizedString("Diğer", comment: "Other container label")
         }
     }
 
@@ -590,7 +595,7 @@ final class ContactManager: ObservableObject {
             if !contact.organizationName.isEmpty {
                 return contact.organizationName
             }
-            return "(İsimsiz Kişi)"
+            return NSLocalizedString("(İsimsiz Kişi)", comment: "Unnamed contact placeholder")
         }
         return name
     }
@@ -610,8 +615,8 @@ final class ContactManager: ObservableObject {
 
         var label: String {
             switch self {
-            case .duplicate: return "Duplike"
-            case .mojibake: return "Karakter Bozuk"
+            case .duplicate: return NSLocalizedString("Duplike", comment: "Duplicate reason label")
+            case .mojibake: return NSLocalizedString("Karakter Bozuk", comment: "Mojibake reason label")
             }
         }
     }

@@ -1,0 +1,2 @@
+"CFBundleDisplayName" = "ContactsExport";
+"NSContactsUsageDescription" = "This app needs access to your contacts to export them to vCard (.vcf) format and to detect and clean duplicate contacts.";

@@ -1,0 +1,2 @@
+"CFBundleDisplayName" = "ContactsExport";
+"NSContactsUsageDescription" = "Kişilerinizi vCard (.vcf) formatında dışa aktarmak ve duplike kişileri tespit edip temizlemek için kişi erişimine ihtiyaç duyar.";

@@ -96,7 +96,7 @@ struct ContentView: View {
                     await manager.requestAccess()
                 }
             } label: {
-                Label("Kişilere Erişim İzni Ver", systemImage: "lock.open")
+                Label("Devam Et", systemImage: "lock.open")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding()
@@ -306,7 +306,7 @@ struct ContentView: View {
                 isExporting = false
                 if !urls.isEmpty {
                     if urls.count > 1 {
-                        manager.errorMessage = "\(urls.count) parça oluşturuldu. Her biri sırayla paylaşılacak."
+                        manager.errorMessage = String(format: NSLocalizedString("%d parça oluşturuldu. Her biri sırayla paylaşılacak.", comment: "Multiple parts created message"), urls.count)
                     }
                     ShareUtility.share(urls: urls)
                 }
@@ -637,7 +637,7 @@ struct DuplicatePreviewView: View {
             try manager.deleteContacts(toDelete)
             dismiss()
         } catch {
-            deleteError = "Silme hatası: \(error.localizedDescription)"
+            deleteError = String(format: NSLocalizedString("Silme hatası: %@", comment: "Delete error with reason"), error.localizedDescription)
             isDeleting = false
         }
     }
